@@ -10,13 +10,6 @@ use serde_json::{Value, json};
 
 use crate::backend::{Backend, ProgressHook};
 
-/// File extensions recognised as photos when expanding folders.
-pub const PHOTO_EXTENSIONS: &[&str] = &[
-    "jpg", "jpeg", "png", "tif", "tiff", "webp", "dng", "cr2", "cr3", "nef", "arw", "raf", "orf", "rw2", "rwl", "raw", "pef", "srw", "psd", "jxl",
-    "gif", "bmp", "avif", // containers LightCraft cannot decode but imports as preview only (their embedded JPEG)
-    "iiq", "crw", "mrw", "x3f", "kdc", "mos", "erf", "3fr", "fff",
-];
-
 /// Headless backend: a [`Session`] with filesystem hooks.
 pub struct Headless {
     pub session: Session,
@@ -178,7 +171,8 @@ impl Backend for Headless {
 /// and make paths absolute.
 pub fn expand_paths(paths: &[String]) -> Vec<String> {
     let absolute = |p: &Path| std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf()).to_string_lossy().to_string();
-    let photo = |p: &Path| p.extension().is_some_and(|e| PHOTO_EXTENSIONS.contains(&e.to_string_lossy().to_lowercase().as_str()));
+    // the extensions `library.import` takes, so the two can't drift apart (issue #1080)
+    let photo = lightcraft_engine::import::is_supported;
     let mut out = Vec::new();
     for p in paths {
         let path = Path::new(p);
@@ -271,6 +265,30 @@ mod tests {
         let mut names: Vec<String> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
         names.sort();
         assert_eq!(names, ["Harbour_4star_05.png", "Hills_4star_06.png"], "{r}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `--import <folder>` takes every file `library.import` takes from a folder, HEIC included
+    /// (issue #1080: the CLI kept its own list, which lacked heic, heif and nrw).
+    #[test]
+    fn folder_expansion_takes_what_library_import_takes() {
+        let dir = std::env::temp_dir().join(format!("lc-mcp-expand-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut want: Vec<String> = Vec::new();
+        for (i, ext) in lightcraft_engine::import::EXTENSIONS.iter().enumerate() {
+            let path = dir.join(format!("p{i}.{ext}"));
+            std::fs::write(&path, b"").unwrap();
+            want.push(std::path::absolute(&path).unwrap().to_string_lossy().to_string());
+        }
+        let upper = dir.join("IMG_0682.HEIC");
+        std::fs::write(&upper, b"").unwrap();
+        want.push(std::path::absolute(&upper).unwrap().to_string_lossy().to_string());
+        std::fs::write(dir.join("notes.txt"), b"").unwrap();
+        let mut got = expand_paths(&[dir.to_string_lossy().to_string()]);
+        got.sort();
+        want.sort();
+        assert_eq!(got, want);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
